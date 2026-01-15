@@ -5,25 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 var db *sql.DB
 
 type User struct {
-	ID     string
-	Name   string
-	Email  string
-	Salary int
+	ID       int
+	Username string
+	Name     string
+	Email    string
+	Password string
 }
 
 func initDB() {
 	var err error
+	godotenv.Load()
 	db, err = sql.Open(
 		"postgres",
-		"postgresql://neondb_owner:npg_R8TL4WNhnHav@ep-steep-wind-ahtciy2l-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+		os.Getenv("DATABASE_URL"),
 	)
 	if err != nil {
 		panic(err)
@@ -33,7 +39,7 @@ func initDB() {
 	}
 }
 
-func createUser(w http.ResponseWriter, r *http.Request) {
+func signupHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -44,18 +50,26 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
 
-	_, err := db.Exec(
-		"INSERT INTO users (id, name, email, salary) VALUES ($1, $2, $3, $4)",
-		user.ID,
+	_, err = db.Exec(
+		"INSERT INTO users (username, name, email, password) VALUES ($1, $2, $3, $4)",
+		user.Username,
 		user.Name,
 		user.Email,
-		user.Salary,
+		string(hashedPassword),
 	)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
+
+	user.Password = ""
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(user)
 }
