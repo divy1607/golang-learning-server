@@ -3,13 +3,13 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
-	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -74,94 +74,63 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(user)
 }
 
-func getUser(w http.ResponseWriter, r *http.Request, id string) {
-	var user User
-	err := db.QueryRow(
-		"SELECT * FROM users WHERE id = $1",
-		id,
-	).Scan(&user.ID, &user.Name, &user.Email, &user.Salary)
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var creds struct {
+		Email    string `json: "email"`
+		Passowrd string `json: "password"`
+	}
 
-	if err == sql.ErrNoRows {
-		http.Error(w, "user not found", http.StatusNotFound)
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+
+	var username string
+	var storedHashedPassword string
+
+	err := db.QueryRow("SELECT username, password FROM users WHERE email = $1", creds.Email).Scan(&username, &storedHashedPassword)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
-	json.NewEncoder(w).Encode(user)
+
+	err = bcrypt.CompareHashAndPassword([]byte(storedHashedPassword), []byte(creds.Passowrd))
+	if err != nil {
+		http.Error(w, "invalid email or password", http.StatusUnauthorized)
+		return
+	}
+
+	expirationTime := time.Now().Add(24 * time.Hour)
+	claims := &jwt.RegisteredClaims{
+		Subject:   username,
+		ExpiresAt: jwt.NewNumericDate(expirationTime),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+	if err != nil {
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
 }
 
-func updateUser(w http.ResponseWriter, r *http.Request, id string) {
-	var body struct {
-		Name   string `json:"name"`
-		Email  string `json:"email"`
-		Salary int    `json:"salary"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	res, err := db.Exec(
-		"UPDATE users SET name = $1, email = $2, salary = $3 WHERE id = $4",
-		body.Name,
-		body.Email,
-		body.Salary,
-		id,
-	)
-
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		http.Error(w, "no user found", http.StatusNotFound)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-
-}
-
-func deleteUser(w http.ResponseWriter, r *http.Request, id string) {
-	res, err := db.Exec(
-		"DELETE FROM users WHERE id = $1",
-		id,
-	)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		http.Error(w, "user not found", http.StatusNotFound)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func userHandler(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/users/")
-
-	switch r.Method {
-	case http.MethodGet:
-		getUser(w, r, id)
-	case http.MethodPut:
-		updateUser(w, r, id)
-	case http.MethodDelete:
-		deleteUser(w, r, id)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenString := r.Header.Get("Authorization")
+		if tokenString == "" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
 	}
 }
 
 func main() {
 	initDB()
 
-	http.HandleFunc("/users", createUser)
-	http.HandleFunc("/users/", userHandler)
+	http.HandleFunc("/signup", signupHandler)
+	http.HandleFunc("/login", loginHandler)
 
-	fmt.Println("server running on port 8080")
-	http.ListenAndServe(":8080", nil)
+	// http.HandleFunc("/profile", AuthMiddleware(profileHandler))
 }
