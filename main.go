@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -76,8 +78,8 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	var creds struct {
-		Email    string `json: "email"`
-		Passowrd string `json: "password"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
@@ -94,7 +96,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = bcrypt.CompareHashAndPassword([]byte(storedHashedPassword), []byte(creds.Passowrd))
+	err = bcrypt.CompareHashAndPassword([]byte(storedHashedPassword), []byte(creds.Password))
 	if err != nil {
 		http.Error(w, "invalid email or password", http.StatusUnauthorized)
 		return
@@ -122,15 +124,37 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "missing token", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		claims := &jwt.RegisteredClaims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+			return []byte(os.Getenv("JWT_SECRET")), nil
+		})
+
+		if err != nil || !token.Valid {
+			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), "username", claims.Subject)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
+func profileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	username := r.Context().Value("username").(string)
+
+	fmt.Fprintf(w, "welcome to your profile, %s!", username)
+}
 func main() {
 	initDB()
 
 	http.HandleFunc("/signup", signupHandler)
 	http.HandleFunc("/login", loginHandler)
 
-	// http.HandleFunc("/profile", AuthMiddleware(profileHandler))
+	http.HandleFunc("/profile", AuthMiddleware(profileHandler))
 }
