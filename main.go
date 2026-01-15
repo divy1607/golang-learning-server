@@ -157,4 +157,9 @@ func main() {
 	http.HandleFunc("/login", loginHandler)
 
 	http.HandleFunc("/profile", AuthMiddleware(profileHandler))
+	fmt.Println("Server starting at :8080...")
+	http.ListenAndServe(":8080", nil)
+	// if err != nil {
+	//     log.Fatal("Server failed to start: ", err)
+	// }
 }
